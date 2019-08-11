@@ -15,18 +15,17 @@
 void sendData();
 void setup();
 
+#define ntpBootCountMask 0x03FF
+RTC_DATA_ATTR uint16_t ntpBootCount = 0;
 RTC_DATA_ATTR int bootCount = 0;
 RTC_DATA_ATTR unsigned short eepromOffset = 0;
 
-
-void sendData() {
+bool startWifi() {
   IPAddress local_IP(LOCAL_IP);
   IPAddress gateway(GATEWAY_IP);
   IPAddress subnet(SUBNET_MASK);
   IPAddress primaryDNS(DNS_PRIMARY); 
   IPAddress secondaryDNS(DNS_SECONDARY);
-  unsigned short offset = 0;
-  t_reading reading;
  
   digitalWrite(LED_PIN,LOW);
   Serial.println("waiting for wifi");
@@ -35,15 +34,29 @@ void sendData() {
  
   digitalWrite(LED_PIN,HIGH);
 
+  unsigned long start = millis();
+
   while((WiFi.status() != WL_CONNECTED)) {
+    if (millis() - start > 5000) {
+      Serial.println("wifi timeout");
+      return false;
+    }
+
     digitalWrite(LED_PIN,HIGH);
     delay(100);
     digitalWrite(LED_PIN,LOW);
     delay(50);
   }
+
   Serial.println("wifi established");
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
+  return true;
+}
+
+void sendData() {
+  unsigned short offset = 0;
+  t_reading reading;
   
   Thingspeak ts(THINGSPEAK_CHANNEL, THINGSPEAK_KEY);
   if(!ts.Begin()) {
@@ -61,19 +74,22 @@ void sendData() {
   }
   
   digitalWrite(LED_PIN,LOW);
-  WiFi.disconnect(true);
-  WiFi.persistent(false); 
 }
 
 void setup() {
+  // keep this delay in, as apparently there's a crash
+  // that can occur if we start accessing data too soon
+  // after wakeup from deep sleep...
   delay(500);
+
   Serial.begin(9600);
   RTCBegin();
   EEPromBegin();
 
   pinMode(LED_PIN,OUTPUT);
-  delay(500);
   bootCount ++;
+  ntpBootCount ++;
+  ntpBootCount &= ntpBootCountMask;
   Serial.print("Boot ");
   Serial.println(bootCount, DEC);
   t_reading reading;
@@ -100,12 +116,23 @@ void setup() {
     digitalWrite(LED_PIN,HIGH);
     delay(50);
     digitalWrite(LED_PIN,LOW);
-    if(bootCount == BUFFER_POINTS){
-      Serial.println("Would send buffer");
-      sendData();
-      eepromOffset = 0;
-      bootCount = 0;
+    if(bootCount == BUFFER_POINTS || ntpBootCount == 1) {
+      if(!startWifi()) {
+        return;
+      }
+      if(bootCount == BUFFER_POINTS){
+        Serial.println("Sending buffer");
+        sendData();
+        eepromOffset = 0;
+        bootCount = 0;
+      }
+      if(ntpBootCount == 1){
+        SyncTime();
+      }
+      WiFi.disconnect(true);
+      WiFi.persistent(false); 
     }
+    
     esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
   } else {
     digitalWrite(LED_PIN,HIGH);
@@ -124,5 +151,5 @@ void setup() {
 }
 
 void loop() {
-
+  // nothing happens in here.  everything happens in setup, then the core goes to sleep
 }

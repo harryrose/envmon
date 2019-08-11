@@ -10,3 +10,6 @@
 [submodule "lib/Adafruit_TSL2561"]
 	path = lib/Adafruit_TSL2561
 	url = https://github.com/adafruit/Adafruit_TSL2561.git
+[submodule "lib/NTPClient"]
+	path = lib/NTPClient
+	url = https://github.com/taranais/NTPClient.git
