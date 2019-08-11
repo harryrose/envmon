@@ -1,117 +1,19 @@
 #include <Arduino.h>
-#include "config.h"
-
-#include <Adafruit_Si7021.h>
-#include <Adafruit_Sensor.h>
-#include <Adafruit_BMP280.h>
-#include <Adafruit_TSL2561_U.h>
-
 #include<WiFi.h>
 #include<HTTPClient.h>
-
-#include "RTClib.h"
 #include <EEPROM.h>
 #include <stdlib.h>
+#include "config.h"
+#include "time.h"
+#include "readings.h"
 
 #define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
-
-typedef struct t_reading{
-  long secondsTime;
-  int solar;
-  int batt;
-  float humidity;
-  float temperature;
-  float pressure;
-  float light;
-} t_reading;
-
-#define OK 1
-#define NOK 0
-
-int obtainSIReading(float &tempReading, float &humReading);
-int obtainBMEReading(float &reading);
-int obtainTSLReading(float &reading);
-int sampleRaw(int pin);
-int obtainReading(t_reading &reading);
+#define ISO_STRING_SIZE 32
 
 unsigned short writeToEEProm(t_reading &reading, unsigned short startAddress);
 unsigned short readFromEEProm(t_reading &reading, unsigned short startAddress);
 void sendData();
 void setup();
-
-Adafruit_Si7021 hum = Adafruit_Si7021();
-Adafruit_BMP280 bme;
-Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
-RTC_DS1307 RTC;
-
-int obtainSIReading(float &tempReading, float &humReading) {
-  if (!hum.begin()) {
-    Serial.println("Did not find Si7021 sensor!");
-    return NOK;
-  }
-  tempReading = hum.readTemperature();
-  humReading = hum.readHumidity();
-
-  return OK;
-}
-
-int obtainBMEReading(float &reading) {
-  if (!bme.begin(0x76)) {  
-    Serial.println("Could not find a valid BMP280 sensor, check wiring!");
-    return NOK;
-  }
-  
-  reading = bme.readPressure();
-  return OK;
-}
-
-int obtainTSLReading(float &reading) {
-  sensors_event_t event;
-  if(!tsl.begin())
-  {
-    /* There was a problem detecting the TSL2561 ... check your connections */
-    Serial.print("Ooops, no TSL2561 detected ... Check your wiring or I2C ADDR!");
-    return NOK;
-  }
-  tsl.enableAutoRange(true);            /* Auto-gain ... switches automatically between 1x and 16x */
-  tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_402MS);
-   
-  tsl.getEvent(&event);
-  reading = event.light;
-  return OK;
-}
-
-int sampleShift = 3;
-int sampleRaw(int pin) {
-  int out = 0;
-  for(int i = 0; i < (1 << sampleShift); i ++) {
-    out += analogRead(pin);
-  }
-  return out >> sampleShift;
-}
-
-
-int obtainReading(t_reading &reading) {
-  int state = obtainTSLReading(reading.light);
-  if(state != OK){
-    return state;
-  }
-  
-  state = obtainBMEReading(reading.pressure);
-  if(state != OK){
-    return state;
-  }
-  
-  state = obtainSIReading(reading.temperature, reading.humidity);
-  if(state != OK){
-    return state;
-  }
-  
-  reading.solar = sampleRaw(SOLAR_PIN);
-  reading.batt = sampleRaw(BATT_PIN);
-  reading.secondsTime = RTC.now().secondstime();
-  return OK;
-}
 
 unsigned short writeToEEProm(t_reading &reading, unsigned short startAddress){
   const byte *bytes = (const byte*)(void*)&reading;
@@ -147,8 +49,7 @@ void sendData() {
   
  
   unsigned short offset = 0;
-  char isoString[32];
-  char buf[256];
+  char isoString[ISO_STRING_SIZE];
   char postBuf[51 + 136 * BUFFER_POINTS];
   t_reading reading;
   Serial.println("waiting for wifi");
@@ -168,13 +69,13 @@ void sendData() {
   
   for(int i = 0; i < BUFFER_POINTS; i++) {
     offset = readFromEEProm(reading,offset);
-    DateTime dt(reading.secondsTime);
     if(i != 0) {
       amountWritten = sprintf(writeHead, ",");
       writeHead += amountWritten;
       payloadSize += amountWritten;
     }
-    sprintf(isoString, "%04d-%02d-%02d %02d:%02d:%02d +0100",dt.year(),dt.month(),dt.day(),dt.hour(),dt.minute(),dt.second());
+    timeToISOString(isoString, ISO_STRING_SIZE, reading.secondsTime);
+    
     amountWritten = sprintf(writeHead, "{\"created_at\":\"%s\",\"field1\":%4.2f,\"field2\":%4.2f,\"field3\":%4.2f,\"field4\":%7.2f,\"field5\":%5.2f,\"field6\":%7.0f}",isoString, reading.solar * 0.0019, reading.batt * 0.0019, reading.temperature, reading.humidity, reading.light, reading.pressure);
     writeHead += amountWritten;
     payloadSize += amountWritten;
@@ -210,7 +111,8 @@ void setup() {
 
   EEPROM.begin(512);
   Serial.begin(9600);
-  RTC.begin();
+  startRTC();
+  
   pinMode(LED_PIN,OUTPUT);
   delay(500);
   bootCount ++;
@@ -218,7 +120,7 @@ void setup() {
   Serial.println(bootCount, DEC);
   t_reading reading;
   int state = obtainReading(reading);
-  if(state == OK) {
+  if(state == RR_OK) {
     Serial.println("OK");
     eepromOffset = writeToEEProm(reading,eepromOffset);
     Serial.print("Solar: ");
